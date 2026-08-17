@@ -19,10 +19,17 @@ on:
 permissions:
   contents: read
 
+# A new push supersedes an in-flight run for the same ref; these compile jobs are
+# long enough that queuing them up behind each other wastes real time.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: compile (${{ matrix.arch_name }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -38,15 +45,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The full toolkit is installed rather than a hand-picked subset. The
-      # reduction suite includes <cub/cub.cuh>, which moves between packages across
-      # CUDA releases, and a build that fails because a header package was renamed
-      # tells us nothing about the kernels.
+      # Only the compile-and-link pieces are installed, and deliberately NOT the
+      # driver: the full `cuda` metapackage depends on nvidia-dkms, which tries to
+      # build a kernel module against the runner's Azure kernel and fails. A hosted
+      # runner has no GPU anyway, so the driver would be dead weight even if it
+      # installed cleanly.
+      #
+      # `cccl` is the package that carries the CUB and Thrust headers, which the
+      # reduction suite needs. cuBLAS is listed separately because its packages are
+      # not `cuda-` prefixed.
       - name: Install CUDA toolkit
         uses: Jimver/cuda-toolkit@v0.2.19
         with:
           cuda: "12.6.0"
           method: network
+          sub-packages: '["nvcc", "cudart-dev", "cccl", "nvrtc-dev"]'
+          non-cuda-sub-packages: '["libcublas", "libcublas-dev"]'
 
       - name: Show toolchain
         run: |
@@ -57,17 +71,19 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.arch }}
 
+      # The build log is captured rather than the project being cleaned and rebuilt
+      # a second time to harvest it. These kernels unroll aggressively and take
+      # minutes to compile; building twice doubled the job for no extra signal.
       - name: Build
-        run: cmake --build build --parallel "$(nproc)"
+        run: cmake --build build --parallel "$(nproc)" 2>&1 | tee build.log
 
-      # -Xptxas=-v prints per-kernel register and shared-memory usage. Surfacing
-      # it in the log makes an accidental register spill visible in a diff of two
-      # CI runs, which is otherwise very easy to miss.
+      # -Xptxas=-v prints per-kernel register and shared-memory usage. Surfacing it
+      # makes an accidental register spill visible when comparing two CI runs, which
+      # is otherwise very easy to miss.
       - name: Register and shared memory usage
         run: |
-          cmake --build build --target clean
-          cmake --build build --parallel "$(nproc)" 2>&1 | grep -E "ptxas info|spill" | sort -u | tee ptxas.txt
-          if grep -qi "spill" ptxas.txt; then
+          grep -E "ptxas info|spill" build.log | sort -u | tee ptxas.txt || true
+          if grep -qiE "[1-9][0-9]* bytes spill" ptxas.txt; then
             echo "::warning title=Register spills::A kernel is spilling registers to local memory"
           fi
 
