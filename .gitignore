@@ -1,0 +1,38 @@
+# Build output
+build/
+build-*/
+out/
+cmake-build-*/
+*.exe
+*.exp
+*.lib
+*.pdb
+*.obj
+*.o
+*.a
+*.so
+
+# Nsight profiles: useful locally, far too large to commit.
+*.ncu-rep
+*.nsys-rep
+*.qdrep
+*.sqlite
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Benchmark output that is machine-specific. results/results.json and
+# results/REPORT.md ARE committed on purpose: they are the reference measurement
+# that CI validates the generated documentation against.
+results/*.json
+!results/results.json
+results/bench_output.txt

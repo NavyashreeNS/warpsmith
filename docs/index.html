@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>warpsmith - CUDA kernel benchmark results</title>
+<meta name="description" content="Measured results for a from-scratch CUDA kernel library: SGEMM against cuBLAS, FlashAttention, and bandwidth-bound kernels against the memory roofline.">
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb;
+    --surface-2: #f4f3f0;
+    --border: #e3e2de;
+    --text: #0b0b0b;
+    --muted: #52514e;
+    --accent: #2a78d6;
+    --accent-2: #eb6834;
+    --good: #008300;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface: #1a1a19;
+      --surface-2: #232322;
+      --border: #383835;
+      --text: #ffffff;
+      --muted: #c3c2b7;
+      --accent: #3987e5;
+      --accent-2: #d95926;
+      --good: #4caf50;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1a1a19;
+    --surface-2: #232322;
+    --border: #383835;
+    --text: #ffffff;
+    --muted: #c3c2b7;
+    --accent: #3987e5;
+    --accent-2: #d95926;
+    --good: #4caf50;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--surface);
+    color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 72px; }
+  header { border-bottom: 1px solid var(--border); padding-bottom: 24px; margin-bottom: 32px; }
+  h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -0.02em; }
+  h2 { font-size: 20px; margin: 44px 0 6px; letter-spacing: -0.01em; }
+  h3 { font-size: 15px; margin: 26px 0 8px; color: var(--muted); font-weight: 600; }
+  p { margin: 8px 0; color: var(--muted); }
+  a { color: var(--accent); }
+  code, .mono { font-family: var(--mono); font-size: 0.9em; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 24px 0; }
+  .tile { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .tile .v { font-size: 25px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.2; }
+  .tile .k { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+
+  figure { margin: 20px 0 8px; }
+  figure img { width: 100%; height: auto; display: block; }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 6px; }
+
+  .scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { padding: 7px 11px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--border); }
+  th:first-child, td:first-child { text-align: left; font-family: var(--mono); font-size: 12.5px; }
+  th { background: var(--surface-2); font-weight: 600; color: var(--muted); position: sticky; top: 0; cursor: pointer; user-select: none; }
+  th:hover { color: var(--text); }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface-2); }
+  .pass { color: var(--good); }
+  .fail { color: var(--accent-2); font-weight: 600; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 16px 0 12px; }
+  .controls button {
+    font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 999px; cursor: pointer;
+    background: var(--surface-2); color: var(--muted); border: 1px solid var(--border);
+  }
+  .controls button[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+  footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 13.5px; color: var(--muted); }
+  .err { background: var(--surface-2); border: 1px solid var(--border); border-left: 3px solid var(--accent-2); padding: 14px 16px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>warpsmith</h1>
+    <p>Hand-written CUDA kernels, measured against cuBLAS, CUB and the hardware's own roofline.
+       Every number on this page is read from <code>results/results.json</code>, the output of
+       <code>warpsmith_bench</code>. Nothing is transcribed.</p>
+    <p><a href="https://github.com/NavyashreeNS/warpsmith">Source on GitHub</a> &middot;
+       <a href="https://github.com/NavyashreeNS/warpsmith/blob/main/docs/deep-dive.md">Deep dive</a> &middot;
+       <a href="https://github.com/NavyashreeNS/warpsmith/blob/main/results/REPORT.md">Full report</a></p>
+  </header>
+
+  <div id="device"></div>
+  <div id="tiles" class="tiles"></div>
+
+  <h2>SGEMM: nine stages of optimization</h2>
+  <p>Each stage adds exactly one technique to the previous one, so the gap between two
+     adjacent bars is what that single technique is worth.</p>
+  <figure>
+    <picture>
+      <source srcset="charts/sgemm-progression-dark.svg" media="(prefers-color-scheme: dark)">
+      <img src="charts/sgemm-progression.svg" alt="Bar chart of SGEMM throughput by optimization stage">
+    </picture>
+  </figure>
+  <figure>
+    <picture>
+      <source srcset="charts/sgemm-scaling-dark.svg" media="(prefers-color-scheme: dark)">
+      <img src="charts/sgemm-scaling.svg" alt="Line chart of SGEMM throughput against matrix size">
+    </picture>
+  </figure>
+  <figure>
+    <picture>
+      <source srcset="charts/cost-of-speed-dark.svg" media="(prefers-color-scheme: dark)">
+      <img src="charts/cost-of-speed.svg" alt="Throughput and register usage per stage, side by side">
+    </picture>
+    <figcaption>Throughput was bought with registers. Occupancy falls as the register tile grows,
+      and throughput rises anyway - what matters is independent work in flight, not resident warps.</figcaption>
+  </figure>
+
+  <h2>Where every kernel sits on the roofline</h2>
+  <figure>
+    <picture>
+      <source srcset="charts/roofline-dark.svg" media="(prefers-color-scheme: dark)">
+      <img src="charts/roofline.svg" alt="Roofline plot of arithmetic intensity against achieved throughput">
+    </picture>
+    <figcaption>Arithmetic intensity decides which ceiling binds. Left of the ridge point a kernel
+      is starved by memory no matter how good its arithmetic is.</figcaption>
+  </figure>
+
+  <h2>Attention: never materializing the score matrix</h2>
+  <figure>
+    <picture>
+      <source srcset="charts/attention-dark.svg" media="(prefers-color-scheme: dark)">
+      <img src="charts/attention.svg" alt="Grouped bars comparing materialized and fused attention">
+    </picture>
+  </figure>
+
+  <h2>Bandwidth-bound kernels against the memory roof</h2>
+  <figure>
+    <picture>
+      <source srcset="charts/bandwidth-dark.svg" media="(prefers-color-scheme: dark)">
+      <img src="charts/bandwidth.svg" alt="Horizontal bars of achieved bandwidth as a percent of peak">
+    </picture>
+  </figure>
+
+  <h2>Autotuning the tile geometry</h2>
+  <figure>
+    <picture>
+      <source srcset="charts/autotune-dark.svg" media="(prefers-color-scheme: dark)">
+      <img src="charts/autotune.svg" alt="Horizontal bars of throughput per tile configuration">
+    </picture>
+    <figcaption>The best tile shape is a property of this GPU's register file and shared memory,
+      so it is measured rather than assumed.</figcaption>
+  </figure>
+
+  <h2>Every measurement</h2>
+  <p>Click a column heading to sort. <code>cv</code> is the coefficient of variation across the
+     middle 90% of samples - the stability of the measurement itself.</p>
+  <div id="controls" class="controls"></div>
+  <div class="scroll"><table id="table"><thead></thead><tbody></tbody></table></div>
+
+  <footer>
+    <p id="footer-note">Loading&hellip;</p>
+  </footer>
+</div>
+
+<script>
+const RESULTS_URL = "../results/results.json";
+
+const fmtTime = ms => ms < 1 ? (ms * 1000).toFixed(1) + " us"
+                  : ms < 1000 ? ms.toFixed(3) + " ms"
+                  : (ms / 1000).toFixed(3) + " s";
+const fmtBytes = n => {
+  const u = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(2) + " " + u[i];
+};
+const num = (v, d = 0) => v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+
+const COLUMNS = [
+  { key: "id",                    label: "kernel",   fmt: r => r.id },
+  { key: "suite",                 label: "suite",    fmt: r => r.suite },
+  { key: "shape",                 label: "shape",    fmt: r => r.shape },
+  { key: "median_ms",             label: "median",   fmt: r => fmtTime(r.median_ms) },
+  { key: "cv_pct",                label: "cv",       fmt: r => r.cv_pct.toFixed(1) + "%" },
+  { key: "gflops",                label: "GFLOP/s",  fmt: r => r.gflops > 0 ? num(r.gflops) : "-" },
+  { key: "gbytes_per_s",          label: "GB/s",     fmt: r => r.gbytes_per_s > 0 ? num(r.gbytes_per_s, 1) : "-" },
+  { key: "pct_of_peak_compute",   label: "% peak",   fmt: r => r.pct_of_peak_compute > 0 ? r.pct_of_peak_compute.toFixed(1) + "%" : "-" },
+  { key: "pct_of_reference",      label: "% ref",    fmt: r => r.pct_of_reference > 0 ? r.pct_of_reference.toFixed(1) + "%" : "-" },
+  { key: "regs_per_thread",       label: "regs",     fmt: r => r.regs_per_thread || "-" },
+  { key: "rel_l2_err",            label: "rel err",  fmt: r => r.rel_l2_err.toExponential(2) },
+  { key: "correct",               label: "check",    fmt: r => r.correct
+      ? '<span class="pass">pass</span>' : '<span class="fail">FAIL</span>' },
+];
+
+let state = { records: [], filter: "all", sort: "suite", dir: 1 };
+
+function renderDevice(d, config) {
+  const ridge = d.ridge_point_flop_per_byte.toFixed(0);
+  document.getElementById("device").innerHTML = `
+    <p><strong>${d.name}</strong> (<code>${d.arch}</code>) &middot;
+    ${d.sm_count} SMs at ${d.clock_mhz} MHz &middot;
+    ${fmtBytes(d.global_mem_bytes)} at ${d.mem_clock_mhz} MHz on a ${d.mem_bus_bits}-bit bus &middot;
+    CUDA ${Math.floor(d.cuda_runtime / 1000)}.${Math.floor((d.cuda_runtime % 1000) / 10)}<br>
+    Theoretical peak: <strong>${(d.peak_fp32_gflops / 1000).toFixed(2)} TFLOP/s</strong> FP32,
+    <strong>${(d.peak_tf32_gflops / 1000).toFixed(2)} TFLOP/s</strong> TF32 on tensor cores,
+    <strong>${d.peak_bandwidth_gbs.toFixed(0)} GB/s</strong> DRAM.
+    Roofline ridge point ${ridge} FLOP/byte.</p>`;
+}
+
+function tile(value, label) {
+  return `<div class="tile"><div class="v">${value}</div><div class="k">${label}</div></div>`;
+}
+
+function renderTiles(records, device) {
+  const pick = (suite, id, size) => records.find(r =>
+    r.suite === suite && r.id === id && (size === undefined || r.size === size));
+  const suiteRecords = s => records.filter(r => r.suite === s);
+
+  const tiles = [];
+
+  const sgemm = suiteRecords("sgemm");
+  if (sgemm.length) {
+    const big = Math.max(...sgemm.map(r => r.size));
+    const mine = sgemm.filter(r => r.size === big && !r.id.includes("cublas"));
+    const best = mine.reduce((a, b) => (a.gflops > b.gflops ? a : b));
+    tiles.push(tile(num(best.gflops) + "<span style='font-size:15px'> GFLOP/s</span>",
+      `best hand-written SGEMM, ${best.shape}`));
+    tiles.push(tile(best.pct_of_reference.toFixed(0) + "%", "of cuBLAS FP32"));
+    tiles.push(tile(best.pct_of_peak_compute.toFixed(0) + "%", "of theoretical FP32 peak"));
+
+    // Largest size at which the naive kernel was measured, for an honest speedup.
+    const naiveSizes = sgemm.filter(r => r.id === "01_naive").map(r => r.size);
+    if (naiveSizes.length) {
+      const s = Math.max(...naiveSizes);
+      const naive = pick("sgemm", "01_naive", s);
+      const fast = sgemm.filter(r => r.size === s && !r.id.includes("cublas"))
+                        .reduce((a, b) => (a.gflops > b.gflops ? a : b));
+      tiles.push(tile(num(naive.median_ms / fast.median_ms) + "x",
+        `faster than the naive kernel at ${s}`));
+    }
+  }
+
+  const att = suiteRecords("attention");
+  if (att.length) {
+    const big = Math.max(...att.map(r => r.size));
+    const b = pick("attention", "02_materialized_causal", big);
+    const f = pick("attention", "03_flash_causal", big);
+    if (b && f) {
+      tiles.push(tile((b.median_ms / f.median_ms).toFixed(2) + "x",
+        `fused causal attention vs materialized, S=${big}`));
+      tiles.push(tile(fmtBytes(b.bytes - f.bytes), `DRAM traffic avoided at S=${big}`));
+    }
+  }
+
+  const bw = records.filter(r => r.gbytes_per_s > 0);
+  if (bw.length) {
+    const best = bw.reduce((a, b) => (a.gbytes_per_s > b.gbytes_per_s ? a : b));
+    tiles.push(tile(best.gbytes_per_s.toFixed(0) + "<span style='font-size:15px'> GB/s</span>",
+      `peak measured bandwidth (${best.pct_of_peak_bandwidth.toFixed(0)}% of theoretical)`));
+  }
+
+  const failures = records.filter(r => !r.correct).length;
+  tiles.push(tile(records.length, "measurements"));
+  tiles.push(tile(failures, failures === 0 ? "correctness failures" : "CORRECTNESS FAILURES"));
+
+  document.getElementById("tiles").innerHTML = tiles.join("");
+}
+
+function renderControls(records) {
+  const suites = ["all", ...new Set(records.map(r => r.suite))];
+  document.getElementById("controls").innerHTML = suites.map(s =>
+    `<button data-suite="${s}" aria-pressed="${s === state.filter}">${s}</button>`).join("");
+  document.querySelectorAll("#controls button").forEach(b => {
+    b.addEventListener("click", () => {
+      state.filter = b.dataset.suite;
+      renderControls(state.records);
+      renderTable();
+    });
+  });
+}
+
+function renderTable() {
+  const thead = document.querySelector("#table thead");
+  const tbody = document.querySelector("#table tbody");
+  thead.innerHTML = "<tr>" + COLUMNS.map(c => {
+    const arrow = state.sort === c.key ? (state.dir > 0 ? " ↑" : " ↓") : "";
+    return `<th data-key="${c.key}">${c.label}${arrow}</th>`;
+  }).join("") + "</tr>";
+
+  thead.querySelectorAll("th").forEach(th => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.key;
+      state.dir = state.sort === key ? -state.dir : 1;
+      state.sort = key;
+      renderTable();
+    });
+  });
+
+  let rows = state.filter === "all"
+    ? state.records.slice()
+    : state.records.filter(r => r.suite === state.filter);
+
+  rows.sort((a, b) => {
+    const x = a[state.sort], y = b[state.sort];
+    if (typeof x === "string") return state.dir * x.localeCompare(y);
+    return state.dir * ((x > y) - (x < y));
+  });
+
+  tbody.innerHTML = rows.map(r =>
+    "<tr>" + COLUMNS.map(c => `<td>${c.fmt(r)}</td>`).join("") + "</tr>").join("");
+}
+
+fetch(RESULTS_URL)
+  .then(r => {
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return r.json();
+  })
+  .then(data => {
+    state.records = data.records;
+    renderDevice(data.device, data.config);
+    renderTiles(data.records, data.device);
+    renderControls(data.records);
+    renderTable();
+    const c = data.config || {};
+    document.getElementById("footer-note").innerHTML =
+      `${data.records.length} measurements, ${c.warmup ?? "?"} untimed warm-up launches and ` +
+      `up to ${c.iters ?? "?"} timed samples per kernel, median reported. ` +
+      `Every kernel is validated against cuBLAS, CUB or a double-precision host reference ` +
+      `before it is timed.`;
+  })
+  .catch(err => {
+    document.getElementById("device").innerHTML =
+      `<div class="err"><strong>Could not load ${RESULTS_URL}</strong> (${err.message}).
+       Open this page from a served copy of the repository - a <code>file://</code> load is
+       blocked by the browser's same-origin policy. From the repository root:
+       <code>python -m http.server</code>, then visit
+       <code>localhost:8000/docs/</code>.</div>`;
+    document.getElementById("footer-note").textContent = "";
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+# Normalize every text file to LF in the index and in the working tree.
+#
+# This is not a style preference. CI regenerates results/REPORT.md and the SVG
+# charts on Linux and fails if they differ from what is committed. If Windows
+# checkouts used CRLF, that diff would always be non-empty and the check would be
+# permanently broken.
+* text=auto eol=lf
+
+# Windows-only scripts that are launched by cmd/PowerShell keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary or binary-like: never touched, never diffed.
+*.png binary
+*.jpg binary
+*.ncu-rep binary
+*.nsys-rep binary
+
+# Generated artifacts: collapse them in pull-request diffs so a review shows the
+# source changes rather than thousands of lines of regenerated SVG path data.
+docs/charts/*.svg linguist-generated=true
+results/REPORT.md linguist-generated=true
+results/results.json linguist-generated=true
+
+# Let GitHub's language statistics reflect what this project actually is: CUDA
+# rather than "C++ with some Python".
+*.cu linguist-language=Cuda
+*.cuh linguist-language=Cuda
+docs/index.html linguist-documentation=true
